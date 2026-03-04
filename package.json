@@ -1,0 +1,14 @@
+{
+  "name": "tg-med-bot",
+  "version": "1.0.0",
+  "description": "Медицинский бот по КР МЗ РФ для студентов",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
