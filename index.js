@@ -166,6 +166,8 @@ bot.on("callback_query", async (query) => {
       bot.answerCallbackQuery(query.id, { text: "Вопрос не найден, задайте его заново" });
       return;
     }
+    const expandSticker = STICKERS[Math.floor(Math.random() * STICKERS.length)];
+    const expandStickerMsg = await bot.sendSticker(chatId, expandSticker);
     bot.sendChatAction(chatId, "typing");
     const expandPrompt = pending.specialty
       ? SYSTEM_PROMPT + `\n\nСтудент выбрал специальность: ${pending.specialty}.`
@@ -174,11 +176,12 @@ bot.on("callback_query", async (query) => {
       const response = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 8192,
-        system: expandPrompt + "\n\nДай максимально ПОДРОБНЫЙ и РАЗВЁРНУТЫЙ ответ на этот вопрос. Охвати все аспекты: определение, классификацию, диагностику, лечение, уровни доказательности, источники КР.",
+        system: expandPrompt + "\n\nДай РАЗВЁРНУТЫЙ но КОМПАКТНЫЙ ответ. Охвати ключевые аспекты: определение, классификацию, диагностику, лечение, уровни доказательности, источники КР. Избегай воды и повторений — только суть. СТРОГО ЗАПРЕЩЕНО использовать линии из символов = или - для разделения разделов. Только текст и эмодзи. Уложись в разумный объём.",
         messages: [{ role: "user", content: "РАЗВЕРНУТО: " + pending.question }],
       });
       let fullText = response.content.filter(b => b.type === "text").map(b => b.text).join("");
       fullText = cleanMarkdown(fullText);
+      try { await bot.deleteMessage(chatId, expandStickerMsg.message_id); } catch(e) {}
       const chunks = splitMessage(fullText);
       for (let i = 0; i < chunks.length; i++) {
         const isLast = i === chunks.length - 1;
@@ -404,8 +407,7 @@ function cleanMarkdown(text) {
     .replace(/\*(.*?)\*/g, "$1")
     .replace(/_(.*?)_/g, "$1")
     .replace(/`(.*?)`/g, "$1")
-    .replace(/^[-=_]{2,}$/gm, "")
-    .replace(/^\s*[-=_]+\s*$/gm, "")
+    .replace(/[=\-]{3,}/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
