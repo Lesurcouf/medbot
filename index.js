@@ -20,6 +20,15 @@ const userSpecialty = new Map();
 const ADMIN_ID = 489560133;
 const statsRequests = new Map(); // date -> count
 const statsUsers = new Map();    // date -> Set of userIds
+const pendingFullAnswer = new Map(); // chatId -> { question, specialty }
+
+// Стикеры для ожидания ответа
+const STICKERS = [
+  "CAACAgIAAxkBAAFD9Uhpqewy1sP9U0XeUyuvs1LPm8s_bgACoi8AAjXDiElhaH29-3ofGzoE",
+  "CAACAgIAAxkBAAFD9Vdpqey2X407TT5lT0Ma-KZM6T9oDQACVTUAAi6SqEl3Mu_lOYXBGzoE",
+  "CAACAgIAAxkBAAFD9Vlpqezaf6ZKSCbRodhewpLzNCJg7wACKD0AAk8BsUsHT7-36-gCxToE",
+  "CAACAgIAAxkBAAFD9WFpqez_uchgXhdsy6k94V1HhvId9AACXXgAAojD8Uhh82UePK7UIToE",
+];
 
 const SYSTEM_PROMPT = `Ты — медицинский ассистент-бот для студентов медицинских вузов России.
 Твоя специализация — клинические рекомендации Министерства здравоохранения РФ с сайта cr.minzdrav.gov.ru.
@@ -36,7 +45,8 @@ const SYSTEM_PROMPT = `Ты — медицинский ассистент-бот
 - Для списков используй • или цифры с точкой
 - Для неотложных состояний добавляй предупреждение о необходимости врача
 - Отвечай только на русском языке
-- Всегда давай ПОЛНЫЙ ответ, не обрывай на середине. Если ответ длинный — это нормально, он будет разбит на несколько сообщений автоматически`;
+- По умолчанию давай КРАТКИЙ ответ: только суть, ключевые критерии и главное по лечению — не более 300-400 слов
+- Если в запросе есть слово РАЗВЕРНУТО или ПОДРОБНО — давай полный детальный ответ без ограничений`;
 
 const SPECIALTIES = [
   { name: "🫀 Кардиология", cb: "cardio" },
@@ -84,10 +94,13 @@ function getMainMenuKeyboard() {
   return { inline_keyboard: rows };
 }
 
-function getBackKeyboard() {
-  return {
-    inline_keyboard: [[{ text: "← Главное меню", callback_data: "main_menu" }]],
-  };
+function getBackKeyboard(withExpand = false) {
+  const rows = [];
+  if (withExpand) {
+    rows.push([{ text: "📖 Дать развёрнутый ответ", callback_data: "expand_answer" }]);
+  }
+  rows.push([{ text: "← Главное меню", callback_data: "main_menu" }]);
+  return { inline_keyboard: rows };
 }
 
 // /start
@@ -120,6 +133,13 @@ bot.onText(/\/menu/, (msg) => {
   });
 });
 
+// /getsticker — получить file_id стикера (только для админа)
+bot.on("sticker", (msg) => {
+  if (msg.chat.id !== ADMIN_ID) return;
+  const id = msg.sticker.file_id;
+  bot.sendMessage(ADMIN_ID, `file_id стикера:\n\n${id}`);
+});
+
 // /stats — только для админа
 bot.onText(/\/stats/, (msg) => {
   if (msg.chat.id !== ADMIN_ID) return;
@@ -139,6 +159,38 @@ bot.on("callback_query", async (query) => {
   const data = query.data;
 
   bot.answerCallbackQuery(query.id);
+
+  if (data === "expand_answer") {
+    const pending = pendingFullAnswer.get(chatId);
+    if (!pending) {
+      bot.answerCallbackQuery(query.id, { text: "Вопрос не найден, задайте его заново" });
+      return;
+    }
+    bot.sendChatAction(chatId, "typing");
+    const expandPrompt = pending.specialty
+      ? SYSTEM_PROMPT + `\n\nСтудент выбрал специальность: ${pending.specialty}.`
+      : SYSTEM_PROMPT;
+    try {
+      const response = await anthropic.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 8192,
+        system: expandPrompt + "\n\nДай максимально ПОДРОБНЫЙ и РАЗВЁРНУТЫЙ ответ на этот вопрос. Охвати все аспекты: определение, классификацию, диагностику, лечение, уровни доказательности, источники КР.",
+        messages: [{ role: "user", content: "РАЗВЕРНУТО: " + pending.question }],
+      });
+      let fullText = response.content.filter(b => b.type === "text").map(b => b.text).join("");
+      fullText = cleanMarkdown(fullText);
+      const chunks = splitMessage(fullText);
+      for (let i = 0; i < chunks.length; i++) {
+        const isLast = i === chunks.length - 1;
+        await bot.sendMessage(chatId, chunks[i], {
+          reply_markup: isLast ? getBackKeyboard() : undefined,
+        });
+      }
+    } catch (e) {
+      bot.sendMessage(chatId, "⚠️ Ошибка. Попробуйте ещё раз.", { reply_markup: getBackKeyboard() });
+    }
+    return;
+  }
 
   if (data === "main_menu") {
     userSpecialty.delete(chatId);
@@ -196,7 +248,9 @@ bot.on("message", async (msg) => {
   const systemPrompt = SYSTEM_PROMPT +
     (specialty ? `\n\nСтудент выбрал специальность: ${specialty}. Фокусируйся на вопросах по этой специальности.` : "");
 
-  // Показываем "печатает..."
+  // Отправляем случайный стикер пока думаем
+  const randomSticker = STICKERS[Math.floor(Math.random() * STICKERS.length)];
+  const stickerMsg = await bot.sendSticker(chatId, randomSticker);
   bot.sendChatAction(chatId, "typing");
 
   // Формируем контент сообщения для Claude
@@ -274,7 +328,7 @@ bot.on("message", async (msg) => {
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: systemPrompt,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: history,
@@ -298,7 +352,7 @@ bot.on("message", async (msg) => {
 
       const followUp = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: systemPrompt,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
         messages: [...history, { role: "assistant", content: response.content }, { role: "user", content: toolResults }],
@@ -316,12 +370,22 @@ bot.on("message", async (msg) => {
     // Очищаем markdown — убираем решётки и звёздочки
     replyText = cleanMarkdown(replyText);
 
-    // Telegram ограничение 4096 символов — разбиваем если нужно
+    // Удаляем стикер
+    try { await bot.deleteMessage(chatId, stickerMsg.message_id); } catch(e) {}
+
+    // Сохраняем вопрос для возможного развёрнутого ответа
+    const lastUserMsg = history[history.length - 2];
+    const lastQuestion = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : null;
+    if (lastQuestion) {
+      pendingFullAnswer.set(chatId, { question: lastQuestion, specialty: userSpecialty.get(chatId) });
+    }
+
+    // Telegram ограничение — разбиваем если нужно
     const chunks = splitMessage(replyText);
     for (let i = 0; i < chunks.length; i++) {
       const isLast = i === chunks.length - 1;
       await bot.sendMessage(chatId, chunks[i], {
-        reply_markup: isLast ? getBackKeyboard() : undefined,
+        reply_markup: isLast ? getBackKeyboard(!!lastQuestion) : undefined,
       });
     }
   } catch (err) {
