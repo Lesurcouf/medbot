@@ -100,7 +100,7 @@ bot.onText(/\/start/, (msg) => {
     `• Подготовиться к экзаменам\n` +
     `• Решить медицинскую задачу/тест\n\n` +
     `Выберите специальность:`,
-    { parse_mode: "Markdown", reply_markup: getMainMenuKeyboard() }
+    {  reply_markup: getMainMenuKeyboard() }
   );
 });
 
@@ -109,7 +109,7 @@ bot.onText(/\/menu/, (msg) => {
   const chatId = msg.chat.id;
   userSpecialty.delete(chatId);
   bot.sendMessage(chatId, "🏥 *Главное меню* — выберите специальность:", {
-    parse_mode: "Markdown",
+    
     reply_markup: getMainMenuKeyboard(),
   });
 });
@@ -125,7 +125,7 @@ bot.on("callback_query", async (query) => {
     userSpecialty.delete(chatId);
     userHistory.delete(chatId);
     bot.sendMessage(chatId, "🏥 *Главное меню* — выберите специальность:", {
-      parse_mode: "Markdown",
+      
       reply_markup: getMainMenuKeyboard(),
     });
     return;
@@ -144,7 +144,7 @@ bot.on("callback_query", async (query) => {
     bot.sendMessage(
       chatId,
       `${spec.name}\n\nГотов ответить на любой вопрос по этой специальности:\n• Диагностические критерии и классификации\n• Схемы лечения и препараты по КР МЗ РФ\n• Уровни доказательности\n• Разбор клинических случаев\n\n*Что вас интересует?*`,
-      { parse_mode: "Markdown", reply_markup: getBackKeyboard() }
+      {  reply_markup: getBackKeyboard() }
     );
   }
 });
@@ -175,7 +175,7 @@ bot.on("message", async (msg) => {
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
+      max_tokens: 2048,
       system: systemPrompt,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: history,
@@ -199,7 +199,7 @@ bot.on("message", async (msg) => {
 
       const followUp = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 1024,
+        max_tokens: 2048,
         system: systemPrompt,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
         messages: [...history, { role: "assistant", content: response.content }, { role: "user", content: toolResults }],
@@ -222,7 +222,6 @@ bot.on("message", async (msg) => {
     for (let i = 0; i < chunks.length; i++) {
       const isLast = i === chunks.length - 1;
       await bot.sendMessage(chatId, chunks[i], {
-        parse_mode: "Markdown",
         reply_markup: isLast ? getBackKeyboard() : undefined,
       });
     }
