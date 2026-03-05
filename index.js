@@ -404,7 +404,8 @@ function cleanMarkdown(text) {
     .replace(/\*(.*?)\*/g, "$1")
     .replace(/_(.*?)_/g, "$1")
     .replace(/`(.*?)`/g, "$1")
-    .replace(/^[-=]{3,}$/gm, "")
+    .replace(/^[-=_]{2,}$/gm, "")
+    .replace(/^\s*[-=_]+\s*$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
