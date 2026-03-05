@@ -36,7 +36,7 @@ const SYSTEM_PROMPT = `Ты — медицинский ассистент-бот
 - Для списков используй • или цифры с точкой
 - Для неотложных состояний добавляй предупреждение о необходимости врача
 - Отвечай только на русском языке
-- Будь лаконичен — Telegram не любит очень длинные сообщения`;
+- Всегда давай ПОЛНЫЙ ответ, не обрывай на середине. Если ответ длинный — это нормально, он будет разбит на несколько сообщений автоматически`;
 
 const SPECIALTIES = [
   { name: "🫀 Кардиология", cb: "cardio" },
@@ -273,7 +273,7 @@ bot.on("message", async (msg) => {
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 2048,
+      max_tokens: 4096,
       system: systemPrompt,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: history,
@@ -297,7 +297,7 @@ bot.on("message", async (msg) => {
 
       const followUp = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 2048,
+        max_tokens: 4096,
         system: systemPrompt,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
         messages: [...history, { role: "assistant", content: response.content }, { role: "user", content: toolResults }],
