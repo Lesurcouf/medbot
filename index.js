@@ -16,6 +16,11 @@ const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 const userHistory = new Map();
 const userSpecialty = new Map();
 
+// Статистика
+const ADMIN_ID = 489560133;
+const statsRequests = new Map(); // date -> count
+const statsUsers = new Map();    // date -> Set of userIds
+
 const SYSTEM_PROMPT = `Ты — медицинский ассистент-бот для студентов медицинских вузов России.
 Твоя специализация — клинические рекомендации Министерства здравоохранения РФ с сайта cr.minzdrav.gov.ru.
 
@@ -114,6 +119,19 @@ bot.onText(/\/menu/, (msg) => {
   });
 });
 
+// /stats — только для админа
+bot.onText(/\/stats/, (msg) => {
+  if (msg.chat.id !== ADMIN_ID) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const requests = statsRequests.get(today) || 0;
+  const users = statsUsers.has(today) ? statsUsers.get(today).size : 0;
+  let total = 0;
+  for (const v of statsRequests.values()) total += v;
+  bot.sendMessage(ADMIN_ID,
+    `📊 Статистика\n\nСегодня (${today}):\n• Запросов: ${requests}\n• Уникальных пользователей: ${users}\n\nВсего запросов за сессию: ${total}`
+  );
+});
+
 // Callback кнопок
 bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
@@ -149,21 +167,29 @@ bot.on("callback_query", async (query) => {
   }
 });
 
+// Вспомогательная функция — скачать файл из Telegram и вернуть base64
+async function downloadFileAsBase64(fileId) {
+  const fileInfo = await bot.getFile(fileId);
+  const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
+  const res = await fetch(fileUrl);
+  const buffer = await res.arrayBuffer();
+  return Buffer.from(buffer).toString("base64");
+}
+
 // Входящие сообщения
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  if (!text || text.startsWith("/")) return;
+  // Пропускаем команды
+  if (text && text.startsWith("/")) return;
+
+  // Пропускаем если нет ни текста, ни фото, ни документа
+  if (!text && !msg.photo && !msg.document) return;
 
   // Инициализируем историю
   if (!userHistory.has(chatId)) userHistory.set(chatId, []);
   const history = userHistory.get(chatId);
-
-  history.push({ role: "user", content: text });
-
-  // Ограничиваем историю последними 10 сообщениями
-  if (history.length > 10) history.splice(0, history.length - 10);
 
   const specialty = userSpecialty.get(chatId);
   const systemPrompt = SYSTEM_PROMPT +
@@ -171,6 +197,78 @@ bot.on("message", async (msg) => {
 
   // Показываем "печатает..."
   bot.sendChatAction(chatId, "typing");
+
+  // Формируем контент сообщения для Claude
+  let userContent = [];
+
+  // Обработка фото
+  if (msg.photo) {
+    try {
+      const photo = msg.photo[msg.photo.length - 1]; // берём максимальное разрешение
+      const base64 = await downloadFileAsBase64(photo.file_id);
+      userContent.push({
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg", data: base64 },
+      });
+      const caption = msg.caption || "Проанализируй это медицинское изображение. Опиши что видишь и дай клиническую интерпретацию согласно КР МЗ РФ.";
+      userContent.push({ type: "text", text: caption });
+    } catch (e) {
+      bot.sendMessage(chatId, "Не удалось загрузить фото. Попробуйте ещё раз.", { reply_markup: getBackKeyboard() });
+      return;
+    }
+  }
+  // Обработка документа (PDF)
+  else if (msg.document) {
+    const doc = msg.document;
+    const isPdf = doc.mime_type === "application/pdf";
+    const isImage = doc.mime_type && doc.mime_type.startsWith("image/");
+
+    if (isPdf) {
+      try {
+        const base64 = await downloadFileAsBase64(doc.file_id);
+        userContent.push({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: base64 },
+        });
+        const caption = msg.caption || "Прочитай этот документ и кратко изложи ключевую медицинскую информацию.";
+        userContent.push({ type: "text", text: caption });
+      } catch (e) {
+        bot.sendMessage(chatId, "Не удалось загрузить PDF. Убедитесь что файл не превышает 20 МБ.", { reply_markup: getBackKeyboard() });
+        return;
+      }
+    } else if (isImage) {
+      try {
+        const base64 = await downloadFileAsBase64(doc.file_id);
+        userContent.push({
+          type: "image",
+          source: { type: "base64", media_type: doc.mime_type, data: base64 },
+        });
+        const caption = msg.caption || "Проанализируй это медицинское изображение.";
+        userContent.push({ type: "text", text: caption });
+      } catch (e) {
+        bot.sendMessage(chatId, "Не удалось загрузить изображение.", { reply_markup: getBackKeyboard() });
+        return;
+      }
+    } else {
+      bot.sendMessage(chatId, "Поддерживаются только фото и PDF файлы.", { reply_markup: getBackKeyboard() });
+      return;
+    }
+  }
+  // Обычный текст
+  else {
+    userContent = text;
+  }
+
+  // Считаем статистику
+  const today = new Date().toISOString().slice(0, 10);
+  statsRequests.set(today, (statsRequests.get(today) || 0) + 1);
+  if (!statsUsers.has(today)) statsUsers.set(today, new Set());
+  statsUsers.get(today).add(chatId);
+
+  history.push({ role: "user", content: userContent });
+
+  // Ограничиваем историю последними 10 сообщениями
+  if (history.length > 10) history.splice(0, history.length - 10);
 
   try {
     const response = await anthropic.messages.create({
